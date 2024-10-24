@@ -6,7 +6,7 @@ import io
 import base64
 from PIL import Image
 
-app = Flask(_name_)
+app = Flask(__name__)
 
 # Función para procesar la imagen
 def process_image(image_data):
