@@ -69,5 +69,5 @@ def procesar_imagen():
     # Devolver la imagen procesada en base64 para mostrarla en el frontend
     return jsonify({'image': processed_image_base64})
 
-if _name_ == '_main_':
+if __name__ == '__main__':
     pass
