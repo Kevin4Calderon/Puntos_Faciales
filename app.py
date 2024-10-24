@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import io
 import base64
 from PIL import Image
-import os
+import os  # Importar os para manejar el entorno
 
 app = Flask(__name__)
 
@@ -71,5 +71,5 @@ def procesar_imagen():
     return jsonify({'image': processed_image_base64})
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))  # Configura el puerto
-    app.run(host='0.0.0.0', port=port)
+    port = int(os.environ.get("PORT", 5000))  # Configurar el puerto
+    app.run(host='0.0.0.0', port=port)  # Ejecutar la aplicación
