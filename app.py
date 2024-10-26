@@ -1,75 +1,106 @@
-from flask import Flask, request, jsonify, render_template
-import numpy as np
+import os
+import re
+from flask import Flask, request, render_template
 import cv2
-import matplotlib.pyplot as plt
-import io
-import base64
-from PIL import Image
-import os  # Importar os para manejar el entorno
+import mediapipe as mp
+import pandas as pd
 
 app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
 
-# Función para procesar la imagen
-def process_image(image_data):
-    # Leer la imagen desde los datos recibidos
-    image = Image.open(io.BytesIO(image_data))
-    image = np.array(image)
+# Inicializar MediaPipe Face Mesh
+mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5)
 
-    # Redimensionar la imagen a (96, 96)
-    resized_image = cv2.resize(image, (96, 96))
+def sanitize_filename(filename):
+    # Reemplazar caracteres no permitidos con un guion bajo
+    return re.sub(r'[^a-zA-Z0-9_.-]', '_', filename)
 
-    # Convertir la imagen redimensionada a escala de grises
-    gray_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2GRAY)
+def draw_cross(image, center, size=5, color=(0, 0, 255)):
+    """Dibuja una cruz en la imagen en la posición especificada."""
+    x, y = center
+    cv2.line(image, (x - size, y - size), (x + size, y + size), color, 2)  # Diagonal de izquierda a derecha
+    cv2.line(image, (x + size, y - size), (x - size, y + size), color, 2)  # Diagonal de derecha a izquierda
 
-    # Inicializar el detector ORB
-    orb = cv2.ORB_create()
+def process_image(image_path):
+    image = cv2.imread(image_path)
+    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    results = face_mesh.process(rgb_image)
 
-    # Detectar puntos clave y descriptores
-    keypoints, descriptors = orb.detectAndCompute(gray_image, None)
+    facial_points_dict = {
+        'left_eye_center_x': [None], 'left_eye_center_y': [None],
+        'right_eye_center_x': [None], 'right_eye_center_y': [None],
+        'left_eye_inner_corner_x': [None], 'left_eye_inner_corner_y': [None],
+        'left_eye_outer_corner_x': [None], 'left_eye_outer_corner_y': [None],
+        'right_eye_inner_corner_x': [None], 'right_eye_inner_corner_y': [None],
+        'right_eye_outer_corner_x': [None], 'right_eye_outer_corner_y': [None],
+        'left_eyebrow_inner_end_x': [None], 'left_eyebrow_inner_end_y': [None],
+        'left_eyebrow_outer_end_x': [None], 'left_eyebrow_outer_end_y': [None],
+        'right_eyebrow_inner_end_x': [None], 'right_eyebrow_inner_end_y': [None],
+        'right_eyebrow_outer_end_x': [None], 'right_eyebrow_outer_end_y': [None],
+        'nose_tip_x': [None], 'nose_tip_y': [None],
+        'mouth_left_corner_x': [None], 'mouth_left_corner_y': [None],
+        'mouth_right_corner_x': [None], 'mouth_right_corner_y': [None],
+        'mouth_center_top_lip_x': [None], 'mouth_center_top_lip_y': [None],
+        'mouth_center_bottom_lip_x': [None], 'mouth_center_bottom_lip_y': [None],
+        'Image': [image_path]
+    }
 
-    # Dibujar "X" rojas en las posiciones de los puntos clave
-    plt.figure(figsize=(7,7))
-    plt.imshow(gray_image, cmap='gray')  # Mostrar la imagen en escala de grises
+    if results.multi_face_landmarks:
+        for face_landmarks in results.multi_face_landmarks:
+            landmarks_mapping = {
+                33: 'left_eye_center', 263: 'right_eye_center',
+                133: 'left_eye_inner_corner', 362: 'right_eye_inner_corner',
+                130: 'left_eye_outer_corner', 359: 'right_eye_outer_corner',
+                55: 'left_eyebrow_inner_end', 285: 'right_eyebrow_inner_end',
+                105: 'left_eyebrow_outer_end', 334: 'right_eyebrow_outer_end',
+                1: 'nose_tip', 61: 'mouth_left_corner', 291: 'mouth_right_corner',
+                0: 'mouth_center_top_lip', 17: 'mouth_center_bottom_lip'
+            }
 
-    for kp in keypoints:
-        x, y = kp.pt
-        plt.plot(x, y, 'rx')  # 'rx' indica color rojo y marca tipo "X"
+            for idx, landmark in enumerate(face_landmarks.landmark):
+                # Obtener coordenadas escaladas
+                x = int(landmark.x * image.shape[1])
+                y = int(landmark.y * image.shape[0])
 
-    plt.axis('off')  # No mostrar ejes
+                # Verificar si el índice está en nuestro mapeo
+                if idx in landmarks_mapping:
+                    key_x = f"{landmarks_mapping[idx]}_x"
+                    key_y = f"{landmarks_mapping[idx]}_y"
+                    facial_points_dict[key_x][0] = x
+                    facial_points_dict[key_y][0] = y
+                    
+                    # Dibuja una cruz roja en los puntos seleccionados
+                    draw_cross(image, (x, y))
 
-    # Convertir el gráfico de matplotlib en imagen y luego a base64
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    # Guardar la imagen procesada
+    output_image_path = os.path.splitext(image_path)[0] + '_processed.jpeg'
+    cv2.imwrite(output_image_path, image)
 
-    return img_base64
+    return pd.DataFrame(facial_points_dict), output_image_path
 
-# Ruta para la página HTML
-@app.route('/')
+@app.route('/', methods=['GET', 'POST'])
 def index():
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            return redirect(request.url)
+        file = request.files['file']
+        if file.filename == '':
+            return redirect(request.url)
+        if file:
+            os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+            sanitized_filename = sanitize_filename(file.filename)
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], sanitized_filename)
+            file.save(file_path)
+
+            df_facial_points, processed_image_path = process_image(file_path)
+            output_csv_path = os.path.join(app.config['UPLOAD_FOLDER'], 'facial_points.csv')
+            df_facial_points.to_csv(output_csv_path, index=False)
+
+            return render_template('result.html', image=processed_image_path, csv_file='facial_points.csv')
+
     return render_template('index.html')
 
-# Ruta para procesar la imagen
-@app.route('/procesar_imagen', methods=['POST'])
-def procesar_imagen():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file part'}), 400
-
-    file = request.files['file']
-
-    if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
-
-    # Leer la imagen en binario
-    image_data = file.read()
-
-    # Procesar la imagen y obtener el resultado
-    processed_image_base64 = process_image(image_data)
-
-    # Devolver la imagen procesada en base64 para mostrarla en el frontend
-    return jsonify({'image': processed_image_base64})
-
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))  # Configurar el puerto
-    app.run(host='0.0.0.0', port=port)  # Ejecutar la aplicación
+    app.run(debug=True)
